@@ -76,6 +76,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ inputs.github-token || secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ inputs.documenter-key || secrets.DOCUMENTER_KEY }}
+          JULIA_NO_VERIFY_HOSTS: 'gaftp.epa.gov'
         run: ${{ inputs.debug-documenter && 'JULIA_DEBUG="Documenter"' || '' }} julia --project=docs/ ${{ inputs.coverage && '--code-coverage=user' }} docs/make.jl
 
       - uses: julia-actions/julia-processcoverage@v1
