@@ -20,4 +20,4 @@ https://earthsci.dev
 
 ## Contributors
 
-![Contributors](https://github.com/EarthSciML/.github/blob/main/contributors.svg)
+<object type="image/svg+xml" data="https://github.com/EarthSciML/.github/blob/main/contributors.svg"></object>
