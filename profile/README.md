@@ -17,3 +17,7 @@ https://earthsci.dev
 (To do so, click on the links in the table under "Package" above and then click on "Star" in the upper right-hand corner.)
 
 [![Star History Chart](https://api.star-history.com/svg?repos=EarthSciML/EarthSciMLBase.jl,EarthSciML/EarthSciMLData.jl,EarthSciML/GasChem.jl,EarthSciML/EnvironmentalTransport.jl,EarthSciML/Aerosol.jl,EarthSciML/AtmosphericDeposition.jl)](https://www.star-history.com/#EarthSciML/EarthSciMLBase.jl&EarthSciML/EarthSciMLData.jl&EarthSciML/GasChem.jl&EarthSciML/EnvironmentalTransport.jl&EarthSciML/Aerosol.jl&EarthSciML/AtmosphericDeposition.jl)
+
+## Contributors
+
+![Contributors](contributors.svg)
