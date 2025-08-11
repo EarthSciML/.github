@@ -10,4 +10,4 @@ https://earthsci.dev
 
 ## Star us on GitHub!
 
-[![Star History Chart](https://api.star-history.com/svg?repos=EarthSciML/EarthSciMLBase.jl,EarthSciML/EarthSciMLData.jl,EarthSciML/GasChem.jl,EarthSciML/EnvironmentalTransport.jl,EarthSciML/Aerosol.jl,EarthSciML/AtmosphericDeposition.jl&type=Date)](https://www.star-history.com/#EarthSciML/EarthSciMLBase.jl&EarthSciML/EarthSciMLData.jl&EarthSciML/GasChem.jl&EarthSciML/EnvironmentalTransport.jl&EarthSciML/Aerosol.jl&EarthSciML/AtmosphericDeposition.jl&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=EarthSciML/EarthSciMLBase.jl,EarthSciML/EarthSciMLData.jl,EarthSciML/GasChem.jl,EarthSciML/EnvironmentalTransport.jl,EarthSciML/Aerosol.jl,EarthSciML/AtmosphericDeposition.jl&type=Date)](https://www.star-history.com/#EarthSciML/EarthSciMLBase.jl&EarthSciML/EarthSciMLData.jl&EarthSciML/GasChem.jl&EarthSciML/EnvironmentalTransport.jl&EarthSciML/Aerosol.jl&EarthSciML/AtmosphericDeposition.jl&&type=Date)
