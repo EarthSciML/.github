@@ -7,8 +7,14 @@ name: "Reusable Release - TagBot"
 #
 # The caller should only call this when
 #   github.event_name == 'workflow_dispatch' || github.actor == 'JuliaTagBot'
-# and must not set a `permissions:` block (TagBot's README asks for the
-# repository defaults, which must be "Read and write").
+# and pass `secrets: inherit`.
+#
+# TagBot authenticates as the org's TagBot GitHub App rather than with
+# GITHUB_TOKEN, because GitHub starts no workflow from a tag GITHUB_TOKEN
+# creates, and that tag is what runs the caller's release.yml. One App serves
+# every repository it is installed on, where a deploy key (TagBot's other
+# option) is unique to one repository. Its token is minted for the caller's
+# repository only.
 
 on:
   workflow_call:
@@ -19,8 +25,8 @@ on:
         required: false
         type: string
     secrets:
-      TAGBOT_SSH_KEY:
-        description: "Private half of a deploy key with write access"
+      TAGBOT_APP_PRIVATE_KEY:
+        description: "Private key of the TagBot GitHub App (org secret); its client ID is the org variable TAGBOT_APP_CLIENT_ID"
         required: true
 
 jobs:
@@ -28,13 +34,23 @@ jobs:
     # TagBot is a container action, which ubuntu-slim cannot run.
     runs-on: ubuntu-latest
     steps:
+      - name: Mint a token for this repository
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.TAGBOT_APP_CLIENT_ID }}
+          private-key: ${{ secrets.TAGBOT_APP_PRIVATE_KEY }}
+          # TagBot reads issues and merged PRs for the changelog and opens an
+          # issue when it cannot tag. `workflows` lets it tag a commit that
+          # edits a workflow file, which GitHub otherwise refuses.
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: read
+          permission-workflows: write
+
       - uses: JuliaRegistries/TagBot@ffef3282bcacf1055e4d621a5c010959dfbe59ff # v1.25.13
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          # The tag is pushed with a deploy key rather than GITHUB_TOKEN because
-          # GitHub starts no workflow from a GITHUB_TOKEN push, and the tag push
-          # is what runs the caller's release.yml.
-          ssh: ${{ secrets.TAGBOT_SSH_KEY }}
+          token: ${{ steps.app-token.outputs.token }}
           subdir: ${{ inputs.julia-subdir != '.' && inputs.julia-subdir || '' }}
           # A subdirectory package is tagged `<Package>-v<version>` by default.
           # Every other binding, the Go module tag, release.yml's trigger and
