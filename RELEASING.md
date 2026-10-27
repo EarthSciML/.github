@@ -56,7 +56,8 @@ its `Project.toml`, default `.`) where relevant.
   `needs_release`, `version`.
 - **`release-register.yml`** — `version`, `release-notes-dir` (default
   `release-notes`). Calling job needs `permissions: contents: write`.
-- **`release-tagbot.yml`** — secret `TAGBOT_SSH_KEY`. Calling job should use
+- **`release-tagbot.yml`** — `secrets: inherit` (for `TAGBOT_APP_PRIVATE_KEY`).
+  Calling job should use
   `if: github.event_name == 'workflow_dispatch' || github.actor == 'JuliaTagBot'`.
 - **`release-resolve.yml`** — `tag`, `version-files`, `version-check`.
   Outputs `tag`, `version`.
@@ -87,16 +88,11 @@ None of this can be done from CI.
 - **JuliaRegistrator**: install the
   [GitHub App](https://github.com/JuliaRegistries/Registrator) on the repo.
   A new package (not a new version) waits 3 days in General's AutoMerge.
-- **TagBot**: a tag pushed with `GITHUB_TOKEN` starts no workflow, so TagBot
-  pushes with a deploy key.
-  1. `ssh-keygen -t ed25519 -N "" -C TagBot -f tagbot`
-  2. **Settings → Deploy keys → Add deploy key**: `tagbot.pub`, with
-     **Allow write access**.
-  3. **Settings → Secrets and variables → Actions**: repository secret
-     `TAGBOT_SSH_KEY` = contents of `tagbot`. Delete both files.
-  4. **Settings → Actions → General → Workflow permissions**: **Read and
-     write**. Issues must stay enabled (JuliaTagBot triggers TagBot by
-     commenting on one).
+- **TagBot**: install the org's TagBot GitHub App on the repository (see
+  below), and add the repository to the org variable `TAGBOT_APP_CLIENT_ID`'s
+  and the org secret `TAGBOT_APP_PRIVATE_KEY`'s repository access lists if
+  they are not set to all repositories. Issues must stay enabled: JuliaTagBot
+  triggers TagBot by commenting on one.
 - **PyPI**: add a trusted publisher at
   https://pypi.org/manage/account/publishing/ — owner `EarthSciML`, the
   repository, workflow `release.yml`, environment `pypi`.
@@ -104,3 +100,38 @@ None of this can be done from CI.
   secrets. Every crate dependency needs a `version` (a path-only dependency
   cannot be published). crates.io publishes are permanent.
 - **Go**: nothing.
+
+## The TagBot GitHub App (once per organization)
+
+A tag created with `GITHUB_TOKEN` starts no workflow, so TagBot needs another
+credential or `release.yml` never runs. A deploy key works but is unique to
+one repository; one GitHub App serves them all, and `release-tagbot.yml` mints
+a short-lived token from it scoped to the calling repository.
+
+1. **Organization settings → Developer settings → GitHub Apps → New GitHub
+   App.** Name it (e.g. `EarthSciML TagBot`), set any homepage URL, untick
+   **Webhook → Active**, and give it these repository permissions:
+   - Contents: Read and write (tags and releases)
+   - Issues: Read and write (TagBot reads the trigger issue and reports failures)
+   - Pull requests: Read-only (changelog)
+   - Workflows: Read and write (lets it tag a commit that edits a workflow file)
+
+   "Where can this GitHub App be installed?": **Only on this account**.
+2. On the App's page, note the **Client ID**, then **Generate a private key**
+   (downloads a `.pem`).
+3. **Install App** → the organization → **Only select repositories** → the
+   package repositories.
+4. **Organization settings → Secrets and variables → Actions**:
+   - Variables → `TAGBOT_APP_CLIENT_ID` = the Client ID.
+   - Secrets → `TAGBOT_APP_PRIVATE_KEY` = the whole contents of the `.pem`.
+     Then delete the file.
+
+   Give both access to the package repositories (or all repositories).
+
+A new repository then needs only step 3's installation and, if access is
+limited, step 4's lists.
+
+Before the App existed, each repository had a deploy key and a
+`TAGBOT_SSH_KEY` secret. `release-tagbot.yml` still uses that key when the App
+is not available to a repository, so either works; once the App is, the
+repository's deploy key and `TAGBOT_SSH_KEY` secret can be deleted.
