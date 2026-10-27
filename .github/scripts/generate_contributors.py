@@ -30,6 +30,10 @@ print(f"Found {len(repos)} repositories.")
 avatars = {}
 for repo in repos:
     repo_name = repo["name"]
+    # A fork's contributors are mostly the upstream project's.
+    if repo["fork"]:
+        print(f"Skipping fork: {repo_name}")
+        continue
     print(f"Fetching contributors for: {repo_name}")
     page_c = 1
     while True:
@@ -38,10 +42,15 @@ for repo in repos:
             params={"per_page": 100, "page": page_c},
             headers={"Authorization": f"token {TOKEN}"}
         )
+        # An empty repository answers 204 with no body.
+        if rc.status_code != 200:
+            break
         contributors = rc.json()
-        if not contributors or rc.status_code != 200:
+        if not contributors:
             break
         for c in contributors:
+            if c.get("type") == "Bot":  # dependabot, github-actions, ...
+                continue
             avatars[c["login"]] = c["avatar_url"]
         page_c += 1
 
