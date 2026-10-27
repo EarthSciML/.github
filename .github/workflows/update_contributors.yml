@@ -4,12 +4,18 @@ on:
   schedule:
     - cron: "0 0 * * 0"  # every Sunday at midnight
   workflow_dispatch:     # allow manual trigger
+  push:
+    branches: [main]
+    paths:
+      - .github/scripts/generate_contributors.py
+      - .github/workflows/update_contributors.yml
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: write  # allow committing changes
+      actions: write   # allow re-enabling this workflow (see the last step)
     steps:
       - uses: actions/checkout@v4
 
@@ -34,3 +40,13 @@ jobs:
           git add contributors.svg
           git commit -m "Update contributors SVG" || echo "No changes to commit"
           git push
+
+      # GitHub disables a scheduled workflow after 60 days without a commit to
+      # the repository, which is how this one stopped in October 2025: this
+      # repository rarely changes, and a week with no new contributors commits
+      # nothing. Re-enabling it through the API resets that 60-day clock.
+      - name: Keep this schedule enabled
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/update_contributors.yml/enable"
