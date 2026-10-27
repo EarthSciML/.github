@@ -1,0 +1,42 @@
+name: "Reusable Release - TagBot"
+
+# Release step 2 (see RELEASING.md in this repository). When General merges a
+# registration, the JuliaTagBot account comments on an issue in the caller's
+# repository; TagBot then tags the registered commit `v<version>` and creates
+# the GitHub release from the registration's release notes.
+#
+# The caller should only call this when
+#   github.event_name == 'workflow_dispatch' || github.actor == 'JuliaTagBot'
+# and must not set a `permissions:` block (TagBot's README asks for the
+# repository defaults, which must be "Read and write").
+
+on:
+  workflow_call:
+    inputs:
+      julia-subdir:
+        description: "Directory holding the Julia package's Project.toml, relative to the repository root"
+        default: "."
+        required: false
+        type: string
+    secrets:
+      TAGBOT_SSH_KEY:
+        description: "Private half of a deploy key with write access"
+        required: true
+
+jobs:
+  TagBot:
+    # TagBot is a container action, which ubuntu-slim cannot run.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: JuliaRegistries/TagBot@ffef3282bcacf1055e4d621a5c010959dfbe59ff # v1.25.13
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # The tag is pushed with a deploy key rather than GITHUB_TOKEN because
+          # GitHub starts no workflow from a GITHUB_TOKEN push, and the tag push
+          # is what runs the caller's release.yml.
+          ssh: ${{ secrets.TAGBOT_SSH_KEY }}
+          subdir: ${{ inputs.julia-subdir != '.' && inputs.julia-subdir || '' }}
+          # A subdirectory package is tagged `<Package>-v<version>` by default.
+          # Every other binding, the Go module tag, release.yml's trigger and
+          # the installer's download URLs all expect `v<version>`.
+          tag_prefix: NO_PREFIX

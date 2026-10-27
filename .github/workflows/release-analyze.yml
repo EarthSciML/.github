@@ -1,0 +1,119 @@
+name: "Reusable Release - Analyze"
+
+# Release step 1a (see RELEASING.md in this repository). Decides whether the
+# commit that started the caller is a release: its Julia package's version is
+# new, every other version site agrees with it, and neither a `v<version>` tag
+# nor the General registry has it yet. Nothing is tagged or published.
+#
+# The caller runs its release gates (tests, conformance, ...) only when
+# `needs_release` is 'true', then calls release-register.yml.
+
+on:
+  workflow_call:
+    inputs:
+      julia-package:
+        description: "Name of the Julia package, as registered in General (e.g. EarthSciAST)"
+        required: true
+        type: string
+      julia-subdir:
+        description: "Directory holding the Julia package's Project.toml, relative to the repository root"
+        default: "."
+        required: false
+        type: string
+      version-files:
+        description: "Whitespace-separated manifests (pyproject.toml, Cargo.toml, package.json, ...) whose version must equal the Julia package's"
+        default: ""
+        required: false
+        type: string
+      version-check:
+        description: "Extra command, run from the repository root, that fails when version sites disagree"
+        default: ""
+        required: false
+        type: string
+    outputs:
+      needs_release:
+        description: "'true' when this commit should be registered"
+        value: ${{ jobs.analyze.outputs.needs_release }}
+      version:
+        description: "The Julia package's version"
+        value: ${{ jobs.analyze.outputs.version }}
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      needs_release: ${{ steps.analysis.outputs.needs_release }}
+      version: ${{ steps.analysis.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Every binding ships under one version number; publishing several
+      # different ones under one tag is the failure this rules out.
+      - name: Check that every version site agrees
+        env:
+          SUBDIR: ${{ inputs.julia-subdir }}
+          VERSION_FILES: ${{ inputs.version-files }}
+        run: |
+          set -euo pipefail
+          read_version() {
+            case "$1" in
+              *.json) jq -r .version "$1" ;;
+              *) grep -m1 '^version *= *"' "$1" | sed 's/.*"\(.*\)".*/\1/' ;;
+            esac
+          }
+          PROJECT=${SUBDIR%/}/Project.toml; PROJECT=${PROJECT#./}
+          VERSION=$(read_version "$PROJECT")
+          status=0
+          for f in $VERSION_FILES; do
+            got=$(read_version "$f" || true)
+            if [ "$got" != "$VERSION" ]; then
+              echo "::error file=$f::version is '$got', expected '$VERSION' (from $PROJECT)"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Run the repository's own version check
+        if: inputs.version-check != ''
+        run: ${{ inputs.version-check }}
+
+      - name: Decide whether this run registers a release
+        id: analysis
+        env:
+          PKG: ${{ inputs.julia-package }}
+          SUBDIR: ${{ inputs.julia-subdir }}
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          PROJECT=${SUBDIR%/}/Project.toml; PROJECT=${PROJECT#./}
+          VERSION=$(grep -m1 '^version = ' "$PROJECT" | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          skip() { echo "::notice::$1"; echo "needs_release=false" >> "$GITHUB_OUTPUT"; exit 0; }
+
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            skip "v$VERSION is already tagged; nothing to register."
+          fi
+
+          # A push that edits Project.toml without changing its version (a compat
+          # bound, a new dependency) is not a release. Registering on it anyway
+          # would quietly move a pending registration onto that commit.
+          if [ "$EVENT" = push ]; then
+            git show "$BEFORE:$PROJECT" > old-project.toml 2>/dev/null || : > old-project.toml
+            OLD=$(grep -m1 '^version = ' old-project.toml | sed 's/.*"\(.*\)".*/\1/' || true)
+            if [ "$OLD" = "$VERSION" ]; then
+              skip "$PROJECT changed but its version is still $VERSION; not a release."
+            fi
+          fi
+
+          # Once General has the version, the next step is TagBot's, and
+          # Registrator would refuse a second registration anyway.
+          VERSIONS=$(curl -sfL "https://raw.githubusercontent.com/JuliaRegistries/General/master/${PKG:0:1}/$PKG/Versions.toml" || true)
+          if grep -qxF "[\"$VERSION\"]" <<< "$VERSIONS"; then
+            skip "$PKG $VERSION is already in General. If v$VERSION is still untagged, run the TagBot workflow by hand."
+          fi
+
+          echo "needs_release=true" >> "$GITHUB_OUTPUT"

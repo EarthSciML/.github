@@ -1,0 +1,64 @@
+name: "Reusable Release - Report"
+
+# Release step 3c (see RELEASING.md in this repository). Summarizes a publish
+# run and, when any part of it failed, opens an issue: the Julia package is
+# already registered at this point, so a failure leaves the release
+# half-published until someone re-runs it.
+#
+# Call it with `if: always() && needs.resolve.result == 'success'` and
+# `results: ${{ toJSON(needs) }}`. The calling job needs
+# `permissions: issues: write`.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag"
+        required: true
+        type: string
+      results:
+        description: "The caller's `needs` context, as JSON"
+        required: true
+        type: string
+      workflow-name:
+        description: "Name of the workflow to re-run by hand, as shown in the Actions tab"
+        default: "Release 3 - Publish"
+        required: false
+        type: string
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+      RESULTS: ${{ inputs.results }}
+      WORKFLOW: ${{ inputs.workflow-name }}
+      RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Summarize
+        run: |
+          {
+            echo "## Release $TAG"
+            echo ""
+            echo "| Job | Result |"
+            echo "| --- | --- |"
+            jq -r 'to_entries[] | "| \(.key) | `\(.value.result)` |"' <<< "$RESULTS"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open an issue on failure
+        run: |
+          set -euo pipefail
+          FAILED=$(jq -r '[to_entries[] | select(.value.result == "failure" or .value.result == "cancelled") | .key] | join(", ")' <<< "$RESULTS")
+          [ -n "$FAILED" ] || exit 0
+          BODY="Run: $RUN_URL
+
+          Failed: $FAILED
+
+          Julia's General registry already has this version. Fix the cause, then run the **$WORKFLOW** workflow by hand with tag \`$TAG\`; steps that already published are skipped."
+          gh issue create --title "Release $TAG is partially published" --label release --body "$BODY" \
+            || gh issue create --title "Release $TAG is partially published" --body "$BODY"
