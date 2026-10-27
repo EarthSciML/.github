@@ -1,0 +1,109 @@
+name: "Reusable Release - Resolve tag"
+
+# Release step 3a (see RELEASING.md in this repository). Checks that a release
+# tag is the commit General accepted before anything publishes from it. A `v*`
+# tag pushed by hand, ahead of or instead of the registration, would otherwise
+# publish every other registry from a commit Julia never got.
+
+on:
+  workflow_call:
+    inputs:
+      julia-package:
+        description: "Name of the Julia package, as registered in General (e.g. EarthSciAST)"
+        required: true
+        type: string
+      julia-subdir:
+        description: "Directory holding the Julia package's Project.toml, relative to the repository root"
+        default: "."
+        required: false
+        type: string
+      tag:
+        description: "Release tag, e.g. v0.4.0 (pass `inputs.tag || github.ref_name`)"
+        required: true
+        type: string
+      version-files:
+        description: "Whitespace-separated manifests whose version must equal the tag's"
+        default: ""
+        required: false
+        type: string
+      version-check:
+        description: "Extra command, run from the repository root, that fails when version sites disagree"
+        default: ""
+        required: false
+        type: string
+    outputs:
+      tag:
+        value: ${{ jobs.resolve.outputs.tag }}
+      version:
+        value: ${{ jobs.resolve.outputs.version }}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Run the repository's own version check
+        if: inputs.version-check != ''
+        run: ${{ inputs.version-check }}
+
+      - name: Match the tag against its manifests and General
+        id: resolve
+        env:
+          TAG: ${{ inputs.tag }}
+          PKG: ${{ inputs.julia-package }}
+          SUBDIR: ${{ inputs.julia-subdir }}
+          VERSION_FILES: ${{ inputs.version-files }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            v[0-9]*) ;;
+            *) echo "::error::'$TAG' is not a release tag (v<version>)."; exit 1 ;;
+          esac
+          VERSION=${TAG#v}
+
+          read_version() {
+            case "$1" in
+              *.json) jq -r .version "$1" ;;
+              *) grep -m1 '^version *= *"' "$1" | sed 's/.*"\(.*\)".*/\1/' ;;
+            esac
+          }
+          SUBDIR=${SUBDIR%/}; SUBDIR=${SUBDIR#.}; SUBDIR=${SUBDIR#/}
+          PROJECT=${SUBDIR:+$SUBDIR/}Project.toml
+          status=0
+          for f in "$PROJECT" $VERSION_FILES; do
+            got=$(read_version "$f" || true)
+            if [ "$got" != "$VERSION" ]; then
+              echo "::error file=$f::$TAG points at a commit where $f says '$got'."
+              status=1
+            fi
+          done
+          [ "$status" -eq 0 ] || exit 1
+
+          # General records the tree of the registered subdirectory, not a
+          # commit. raw.githubusercontent.com caches for a few minutes, so a
+          # merge moments ago may not be visible on the first try.
+          WANT=$(git rev-parse "HEAD:$SUBDIR")
+          for _ in $(seq 1 10); do
+            GOT=$(curl -sfL "https://raw.githubusercontent.com/JuliaRegistries/General/master/${PKG:0:1}/$PKG/Versions.toml" \
+                  | awk -v v="[\"$VERSION\"]" '$0 == v { found = 1; next } found && /git-tree-sha1/ { gsub(/.*= *"|"/, ""); print; exit }' || true)
+            [ -n "$GOT" ] && break
+            sleep 60
+          done
+          if [ -z "$GOT" ]; then
+            echo "::error::$PKG $VERSION is not in General. Release tags come from TagBot after General accepts a registration."
+            exit 1
+          fi
+          if [ "$GOT" != "$WANT" ]; then
+            echo "::error::General registered tree $GOT for $VERSION, but $TAG has $WANT at ${SUBDIR:-the repository root}."
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"

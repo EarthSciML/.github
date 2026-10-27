@@ -1,0 +1,132 @@
+name: "Reusable Release - Register Julia"
+
+# Release step 1b (see RELEASING.md in this repository). Asks JuliaRegistrator
+# to register the caller's commit, with release notes. Call it only after
+# release-analyze.yml said `needs_release` and the caller's gates passed.
+#
+# The calling job must grant `permissions: contents: write`: a commit comment
+# is a write to repository content.
+#
+# Registration from a workflow works because Registrator whitelists
+# `github-actions[bot]` ahead of its collaborator check (Registrator.jl
+# src/commentbot/github_utils.jl:36), and the GITHUB_TOKEN recursion rule does
+# not apply: Registrator is a GitHub App consuming a webhook, not a workflow.
+
+on:
+  workflow_call:
+    inputs:
+      julia-package:
+        description: "Name of the Julia package (e.g. EarthSciAST)"
+        required: true
+        type: string
+      julia-subdir:
+        description: "Directory holding the Julia package's Project.toml, relative to the repository root"
+        default: "."
+        required: false
+        type: string
+      version:
+        description: "Version being registered (release-analyze.yml's `version` output)"
+        required: true
+        type: string
+      release-notes-dir:
+        description: "Directory of hand-written `v<version>.md` notes, put first in the release notes when present"
+        default: "release-notes"
+        required: false
+        type: string
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Registrator takes everything under `Release notes:` as the registry PR's
+      # release notes, and TagBot later copies them into the GitHub release.
+      #
+      # General's AutoMerge refuses a breaking release (any 0.x minor bump) whose
+      # notes do not say "breaking" or "changelog", which is what stalled
+      # EarthSciAST v0.3.0. Both headings below are always present, so the
+      # generated notes pass; a hand-written `<release-notes-dir>/v<version>.md`
+      # goes first and is where upgrade instructions belong.
+      - name: Write the registration comment
+        env:
+          VERSION: ${{ inputs.version }}
+          SUBDIR: ${{ inputs.julia-subdir }}
+          NOTES_DIR: ${{ inputs.release-notes-dir }}
+        run: |
+          set -euo pipefail
+          # The previous release tag bounds the changelog. Taking the first line
+          # with parameter expansion, not `head`: under pipefail, `head` closing
+          # the pipe kills git with SIGPIPE.
+          PREV_TAG=$(git tag -l 'v*' --sort=-v:refname)
+          PREV_TAG=${PREV_TAG%%$'\n'*}
+          RANGE=${PREV_TAG:+$PREV_TAG..HEAD}
+
+          SUBDIR=${SUBDIR%/}
+          {
+            if [ "$SUBDIR" = . ] || [ -z "$SUBDIR" ]; then
+              echo "@JuliaRegistrator register"
+            else
+              echo "@JuliaRegistrator register subdir=$SUBDIR"
+            fi
+            echo ""
+            echo "Release notes:"
+            echo ""
+            if [ -f "$NOTES_DIR/v$VERSION.md" ]; then
+              cat "$NOTES_DIR/v$VERSION.md"
+              echo ""
+            fi
+            echo "## Breaking changes"
+            echo ""
+            BREAKING=$(git log $RANGE --no-merges -E \
+              --grep='^[a-z]+(\([^)]*\))?!:' --grep='^BREAKING[ -]CHANGE' \
+              --pretty=format:'- %s (%h)')
+            if [ -n "$BREAKING" ]; then
+              echo "$BREAKING"
+            else
+              echo "None marked in the commit messages (\`type!:\` or \`BREAKING CHANGE:\`); see the changelog below."
+            fi
+            echo ""
+            echo "## Changelog"
+            echo ""
+            git log $RANGE -n 100 --no-merges --pretty=format:'- %s (%h)'
+            echo ""
+          } > registration-comment.md
+          cat registration-comment.md
+
+      - name: Trigger JuliaRegistrator
+        uses: peter-evans/commit-comment@v4
+        with:
+          # Registrator registers the commit it is asked on, and that commit is
+          # what TagBot tags and every other registry later publishes.
+          sha: ${{ github.sha }}
+          body-path: registration-comment.md
+
+      - name: Note what happens next
+        env:
+          PKG: ${{ inputs.julia-package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          {
+            echo "## Julia registration: $PKG $VERSION"
+            echo ""
+            echo "Asked JuliaRegistrator to register"
+            echo "[this commit](https://github.com/${{ github.repository }}/commit/${{ github.sha }})."
+            echo "Its reply on the commit links the PR against"
+            echo "[General](https://github.com/JuliaRegistries/General/pulls)."
+            echo ""
+            echo "- **AutoMerge passes:** General merges it (about 15 minutes for a new"
+            echo "  version, 3 days for a new package), TagBot tags \`v$VERSION\`, and"
+            echo "  \`release.yml\` publishes everything else from that tag."
+            echo "- **AutoMerge refuses:** fix the cause on main, then run the"
+            echo "  registration workflow by hand. It registers $VERSION again from"
+            echo "  the new commit."
+            echo ""
+            echo "If no reply appears on the commit, the JuliaRegistrator App has"
+            echo "come off this repository."
+          } >> "$GITHUB_STEP_SUMMARY"

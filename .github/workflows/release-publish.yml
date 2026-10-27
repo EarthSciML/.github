@@ -1,0 +1,517 @@
+name: "Reusable Release - Publish"
+
+# Release step 3b (see RELEASING.md in this repository). Publishes the non-Julia,
+# non-Python bindings from a tag release-resolve.yml has checked, builds the
+# command-line tools, and attaches them to the GitHub release TagBot created.
+# Every part is optional and runs only when its input is set.
+#
+# PyPI is NOT here: trusted publishing cannot match a reusable workflow, so
+# each repository publishes to PyPI from a job in its own release.yml.
+#
+# The calling job needs `permissions: contents: write` (Go module tag, release
+# assets) and `secrets: inherit` (CARGO_REGISTRY_TOKEN, NPM_TOKEN).
+#
+# Every publish step treats "already published" as success, so a run that
+# failed partway is finished by running the caller again on the same tag.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag (release-resolve.yml's `tag` output)"
+        required: true
+        type: string
+      version:
+        description: "Release version (release-resolve.yml's `version` output)"
+        required: true
+        type: string
+      crates:
+        description: "Whitespace-separated crate directories to publish to crates.io, in dependency order"
+        default: ""
+        required: false
+        type: string
+      cargo-publish-args:
+        description: "Extra arguments for `cargo publish`, e.g. --locked"
+        default: ""
+        required: false
+        type: string
+      npm-dir:
+        description: "Directory of the npm package to publish"
+        default: ""
+        required: false
+        type: string
+      go-module-dir:
+        description: "Directory holding the Go module's go.mod; tagged `<dir>/v<version>`"
+        default: ""
+        required: false
+        type: string
+      cli-name:
+        description: "Archive name prefix for the command-line tools, e.g. esm-cli"
+        default: ""
+        required: false
+        type: string
+      cli-bins:
+        description: "Whitespace-separated `<crate dir>:<binary>` pairs to build per platform and attach to the release"
+        default: ""
+        required: false
+        type: string
+      install-notes:
+        description: "Markdown appended to the GitHub release notes under an Installation heading"
+        default: ""
+        required: false
+        type: string
+    secrets:
+      CARGO_REGISTRY_TOKEN:
+        required: false
+      NPM_TOKEN:
+        required: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # crates.io. Since Rust 1.66, `cargo publish` waits until the crate is in the
+  # index, so a later crate in the list can depend on an earlier one.
+  # ---------------------------------------------------------------------------
+  crates:
+    if: inputs.crates != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        env:
+          VERSION: ${{ inputs.version }}
+          CRATES: ${{ inputs.crates }}
+          PUBLISH_ARGS: ${{ inputs.cargo-publish-args }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          for dir in $CRATES; do
+            manifest=$(realpath "$dir/Cargo.toml")
+            pkg=$(cargo metadata --no-deps --format-version 1 --manifest-path "$manifest" \
+                  | jq -c --arg m "$manifest" '.packages[] | select(.manifest_path == $m)')
+            name=$(jq -r .name <<< "$pkg"); ver=$(jq -r .version <<< "$pkg")
+            if [ "$ver" != "$VERSION" ]; then
+              echo "::error file=$dir/Cargo.toml::$name is version $ver, expected $VERSION."
+              exit 1
+            fi
+            # Publishing is not idempotent: crates.io rejects a version that
+            # already exists, and a version can never be reused. Treat "already
+            # there" as success so re-running a release does not fail.
+            if curl -sf -o /dev/null \
+                 -H "User-Agent: EarthSciML release (github.com/${{ github.repository }})" \
+                 "https://crates.io/api/v1/crates/$name/$VERSION"; then
+              echo "::notice::$name $VERSION is already on crates.io — skipping."
+              continue
+            fi
+            # A Cargo.lock whose entry for this crate is stale is rewritten by
+            # the verification build, and `cargo publish` then refuses the dirty
+            # tree: bump a tracked lock's entry along with the version.
+            cargo publish --manifest-path "$manifest" $PUBLISH_ARGS
+          done
+
+  # ---------------------------------------------------------------------------
+  # npm
+  # ---------------------------------------------------------------------------
+  npm:
+    if: inputs.npm-dir != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.npm-dir }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+          cache-dependency-path: ${{ inputs.npm-dir }}/package-lock.json
+
+      - run: npm ci
+      - run: npm run build --if-present
+
+      - name: Publish to npm
+        env:
+          VERSION: ${{ inputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          NAME=$(node -p "require('./package.json').name")
+          GOT=$(node -p "require('./package.json').version")
+          if [ "$GOT" != "$VERSION" ]; then
+            echo "::error::$NAME is version $GOT, expected $VERSION."
+            exit 1
+          fi
+          # npm refuses to publish over an existing version (E403). Treat that as
+          # success so re-running a release is a no-op rather than a failure.
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "::notice::$NAME@$VERSION is already on npm — skipping."
+            exit 0
+          fi
+          npm publish
+
+  # ---------------------------------------------------------------------------
+  # Go: a release is a module tag and a proxy fetch. A module in a
+  # subdirectory resolves the tag `<dir>/v<version>`, not `v<version>`.
+  # ---------------------------------------------------------------------------
+  go:
+    if: inputs.go-module-dir != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Tag the module and ask the proxy for it
+        env:
+          VERSION: ${{ inputs.version }}
+          DIR: ${{ inputs.go-module-dir }}
+        run: |
+          set -euo pipefail
+          DIR=${DIR%/}; DIR=${DIR#.}; DIR=${DIR#/}
+          MODULE=$(awk '$1 == "module" { print $2; exit }' "${DIR:-.}/go.mod")
+          if [ -n "$DIR" ]; then
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            # The Go proxy caches a tag immutably, so an existing one is already
+            # what consumers resolve.
+            TAG="$DIR/v$VERSION"
+            if git ls-remote --exit-code --tags origin "$TAG" >/dev/null 2>&1; then
+              echo "::notice::$TAG already exists — skipping."
+            else
+              git tag -a "$TAG" -m "Go module v$VERSION"
+              git push origin "$TAG"
+            fi
+          fi
+          curl -sS "https://proxy.golang.org/$MODULE/@v/v$VERSION.info" || true
+
+  # ---------------------------------------------------------------------------
+  # Command-line tools, each built on its platform's own runner and shipped
+  # together in one archive per platform.
+  # ---------------------------------------------------------------------------
+  build-binaries:
+    if: inputs.cli-bins != ''
+    name: Build ${{ matrix.config.name }}
+    runs-on: ${{ matrix.config.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          # `glibc` is the oldest glibc the Linux binaries must run on. Built
+          # natively on ubuntu-latest they required the runner's own (2.39),
+          # so EarthSciAST v0.3.0's `esm` would not start on RHEL 9 (2.34).
+          # 2.17 is the floor Rust itself supports, and glibc is backward
+          # compatible. A static musl build would also cover Alpine, but musl's
+          # libm can differ from glibc's in the last bit, and these binaries
+          # should compute what the crate computes.
+          - { name: "Linux x64",   os: ubuntu-latest,     platform: linux-x64,   rust_target: x86_64-unknown-linux-gnu,  exe: "",     archive_ext: tar.gz, glibc: "2.17" }
+          - { name: "Linux ARM64", os: ubuntu-24.04-arm,  platform: linux-arm64, rust_target: aarch64-unknown-linux-gnu, exe: "",     archive_ext: tar.gz, glibc: "2.17" }
+          - { name: "macOS x64",   os: macos-latest,      platform: macos-x64,   rust_target: x86_64-apple-darwin,       exe: "",     archive_ext: tar.gz }
+          - { name: "macOS ARM64", os: macos-latest,      platform: macos-arm64, rust_target: aarch64-apple-darwin,      exe: "",     archive_ext: tar.gz }
+          - { name: "Windows x64", os: windows-latest,    platform: windows-x64, rust_target: x86_64-pc-windows-gnu,     exe: ".exe", archive_ext: zip }
+    env:
+      # One target directory for every crate, workspace member or not, so the
+      # steps below know where each binary lands.
+      CARGO_TARGET_DIR: target-cli
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.config.rust_target }}
+
+      - name: Install build tools
+        if: runner.os == 'Windows'
+        run: choco install mingw
+
+      # cargo-zigbuild links against the glibc named in the target suffix
+      # (`x86_64-unknown-linux-gnu.2.17`) using zig's bundled libc stubs, and
+      # still writes to <target-dir>/x86_64-unknown-linux-gnu. It finds zig
+      # through the `ziglang` wheel, so both go into one Python environment.
+      - uses: actions/setup-python@v5
+        if: matrix.config.glibc
+        with:
+          python-version: '3.12'
+
+      - name: Install cargo-zigbuild
+        if: matrix.config.glibc
+        run: pip install cargo-zigbuild==0.23.4 ziglang==0.17.0
+
+      - name: Build
+        shell: bash
+        env:
+          TARGET: ${{ matrix.config.rust_target }}
+          GLIBC: ${{ matrix.config.glibc }}
+          CLI_BINS: ${{ inputs.cli-bins }}
+        run: |
+          set -euo pipefail
+          if [ -n "$GLIBC" ]; then
+            build=(cargo zigbuild --target "$TARGET.$GLIBC")
+          else
+            build=(cargo build --target "$TARGET")
+          fi
+          for pair in $CLI_BINS; do
+            "${build[@]}" --release --manifest-path "${pair%%:*}/Cargo.toml" --bin "${pair##*:}"
+          done
+
+      - name: Check the glibc floor
+        if: matrix.config.glibc
+        env:
+          TARGET: ${{ matrix.config.rust_target }}
+          GLIBC: ${{ matrix.config.glibc }}
+          CLI_BINS: ${{ inputs.cli-bins }}
+        run: |
+          set -euo pipefail
+          for pair in $CLI_BINS; do
+            bin="$CARGO_TARGET_DIR/$TARGET/release/${pair##*:}"
+            need=$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sed 's/GLIBC_//' | sort -uV | tail -n 1)
+            echo "$bin needs glibc $need"
+            if [ "$(printf '%s\n%s\n' "$need" "$GLIBC" | sort -V | tail -n 1)" != "$GLIBC" ]; then
+              echo "::error::$bin needs glibc $need, newer than the $GLIBC floor."
+              exit 1
+            fi
+          done
+
+      - name: Package
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          PLATFORM: ${{ matrix.config.platform }}
+          TARGET: ${{ matrix.config.rust_target }}
+          EXE: ${{ matrix.config.exe }}
+          CLI_NAME: ${{ inputs.cli-name }}
+          CLI_BINS: ${{ inputs.cli-bins }}
+        run: |
+          set -euo pipefail
+          BINS=""; for pair in $CLI_BINS; do BINS="$BINS ${pair##*:}"; done; BINS=${BINS# }
+          DIST_DIR="${CLI_NAME}-${VERSION}-${PLATFORM}"
+          mkdir -p "$DIST_DIR"
+          for bin in $BINS; do
+            cp "$CARGO_TARGET_DIR/$TARGET/release/$bin$EXE" "$DIST_DIR/"
+          done
+          for f in README.md LICENSE; do if [ -f "$f" ]; then cp "$f" "$DIST_DIR/"; fi; done
+
+          if [ -n "$EXE" ]; then
+            {
+              echo '@echo off'
+              echo 'setlocal enabledelayedexpansion'
+              echo 'cd /d "%~dp0"'
+              echo "echo Installing $BINS..."
+              echo 'set "INSTALL_DIR=%USERPROFILE%\.local\bin"'
+              echo 'if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"'
+              for bin in $BINS; do echo "copy $bin.exe \"%INSTALL_DIR%\\\" >nul"; done
+              echo 'echo %PATH% | findstr /C:"%INSTALL_DIR%" >nul'
+              echo 'if errorlevel 1 ('
+              echo '    echo Adding %INSTALL_DIR% to PATH...'
+              echo '    setx PATH "%PATH%;%INSTALL_DIR%"'
+              echo '    echo Please restart your command prompt.'
+              echo ')'
+              echo "echo Installed $BINS."
+              echo 'pause'
+            } > "$DIST_DIR/install.bat"
+            7z a "$DIST_DIR.zip" "$DIST_DIR"
+          else
+            {
+              echo '#!/bin/bash'
+              echo 'set -euo pipefail'
+              echo 'cd "$(dirname "$0")"'
+              echo "BINS=\"$BINS\""
+              cat << 'INSTALL_EOF'
+          INSTALL_DIR="${HOME}/.local/bin"
+          echo "Installing $BINS..."
+          mkdir -p "$INSTALL_DIR"
+          for bin in $BINS; do
+              cp "$bin" "$INSTALL_DIR/"
+              chmod +x "$INSTALL_DIR/$bin"
+          done
+          if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+              if [ -n "${ZSH_VERSION:-}" ]; then
+                  SHELL_CONFIG="$HOME/.zshrc"
+              elif [ -n "${BASH_VERSION:-}" ]; then
+                  SHELL_CONFIG="$HOME/.bashrc"
+              else
+                  SHELL_CONFIG="$HOME/.profile"
+              fi
+              echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_CONFIG"
+              echo "Added to PATH in $SHELL_CONFIG"
+              echo "Restart shell or run: source $SHELL_CONFIG"
+          fi
+          echo "✓ Installed $BINS."
+          INSTALL_EOF
+            } > "$DIST_DIR/install.sh"
+            chmod +x "$DIST_DIR/install.sh"
+            tar -czf "$DIST_DIR.tar.gz" "$DIST_DIR"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.config.platform }}
+          path: ${{ inputs.cli-name }}-*.${{ matrix.config.archive_ext }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Attach the archives, their checksums and the installer to TagBot's release,
+  # and add install instructions below TagBot's notes.
+  # ---------------------------------------------------------------------------
+  release-notes:
+    needs: build-binaries
+    if: ${{ !cancelled() && needs.build-binaries.result != 'failure' && (inputs.cli-bins != '' || inputs.install-notes != '') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+      VERSION: ${{ inputs.version }}
+      CLI_NAME: ${{ inputs.cli-name }}
+      CLI_BINS: ${{ inputs.cli-bins }}
+      INSTALL_NOTES: ${{ inputs.install-notes }}
+    steps:
+      - uses: actions/download-artifact@v4
+        if: inputs.cli-bins != ''
+        with:
+          pattern: cli-*
+          path: dist
+          merge-multiple: true
+
+      # One checksum format for every platform: `sha256sum -c` reads it.
+      - name: Checksums and installer
+        if: inputs.cli-bins != ''
+        run: |
+          set -euo pipefail
+          (cd dist && for f in "$CLI_NAME"-*; do sha256sum "$f" > "$f.sha256"; done)
+          BINS=""; for pair in $CLI_BINS; do BINS="$BINS ${pair##*:}"; done; BINS=${BINS# }
+          {
+            echo '#!/bin/bash'
+            echo "# Installs or updates $BINS from the latest release."
+            echo 'set -euo pipefail'
+            echo "REPO=\"$GH_REPO\""
+            echo "ARCHIVE=\"$CLI_NAME\""
+            echo "BINS=\"$BINS\""
+            cat << 'UPDATE_EOF'
+          INSTALL_DIR="${HOME}/.local/bin"
+
+          detect_platform() {
+              case "$(uname -s)/$(uname -m)" in
+                  Linux/x86_64|Linux/amd64)       echo linux-x64 ;;
+                  Linux/aarch64|Linux/arm64)      echo linux-arm64 ;;
+                  Darwin/x86_64)                  echo macos-x64 ;;
+                  Darwin/arm64)                   echo macos-arm64 ;;
+                  CYGWIN*|MINGW*|MSYS*)           echo windows-x64 ;;
+                  *)                              echo unsupported ;;
+              esac
+          }
+
+          platform="$(detect_platform)"
+          if [ "$platform" = unsupported ]; then
+              echo "Unsupported platform: $(uname -s) $(uname -m)"
+              exit 1
+          fi
+
+          tag="$(curl -s "https://api.github.com/repos/$REPO/releases/latest" \
+                 | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [ -z "$tag" ]; then
+              echo "Failed to get the latest version"
+              exit 1
+          fi
+
+          first=${BINS%% *}
+          if command -v "$first" > /dev/null && [ "v$("$first" --version 2>/dev/null | grep -o '[0-9][0-9.]*' | sed -n 1p)" = "$tag" ]; then
+              echo "Already up to date ($tag)"
+              exit 0
+          fi
+
+          ext=tar.gz; exe=""
+          if [ "$platform" = windows-x64 ]; then ext=zip; exe=.exe; fi
+          name="$ARCHIVE-${tag#v}-$platform"
+
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          echo "Downloading $name.$ext..."
+          curl -fL -o "$tmp/$name.$ext" "https://github.com/$REPO/releases/download/$tag/$name.$ext"
+          if [ "$ext" = zip ]; then unzip -q "$tmp/$name.$ext" -d "$tmp"; else tar -xzf "$tmp/$name.$ext" -C "$tmp"; fi
+
+          mkdir -p "$INSTALL_DIR"
+          for bin in $BINS; do
+              cp "$tmp/$name/$bin$exe" "$INSTALL_DIR/"
+              chmod +x "$INSTALL_DIR/$bin$exe"
+          done
+
+          if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+              echo "Add $INSTALL_DIR to your PATH to use $BINS."
+          fi
+          echo "Installed $BINS $tag."
+          UPDATE_EOF
+          } > dist/update.sh
+          chmod +x dist/update.sh
+
+      # TagBot pushes the tag and then creates the release, so the release can
+      # trail this run's start; the builds above usually cover the gap. TagBot
+      # cannot create the release at all when the tagged commit edits a
+      # workflow file (it opens an issue instead), so after waiting this job
+      # creates one itself rather than leave the binaries unattached.
+      - name: Wait for the GitHub release
+        run: |
+          for _ in $(seq 1 20); do
+            gh release view "$TAG" > /dev/null 2>&1 && exit 0
+            sleep 60
+          done
+          echo "::warning::TagBot created no release for $TAG; creating one."
+          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes
+
+      - name: Upload assets
+        if: inputs.cli-bins != ''
+        run: gh release upload "$TAG" dist/* --clobber
+
+      - name: Add install instructions to the release notes
+        run: |
+          set -euo pipefail
+          # The marker predates this shared workflow (EarthSciAST's release.yml);
+          # keeping it means a re-run on an old tag still replaces, not appends.
+          MARKER='<!-- release.yml: install instructions -->'
+          gh release view "$TAG" --json body --jq .body > body.md
+          awk -v m="$MARKER" '$0 == m { exit } { print }' body.md > notes.md
+          BASE="https://github.com/$GH_REPO/releases/download/$TAG"
+          BINS=""; for pair in $CLI_BINS; do BINS="$BINS \`${pair##*:}\`"; done; BINS=${BINS# }
+          {
+            echo "$MARKER"
+            echo ""
+            echo "## Installation"
+            echo ""
+            if [ -n "$INSTALL_NOTES" ]; then
+              printf '%s\n' "$INSTALL_NOTES"
+              echo ""
+            fi
+            if [ -n "$CLI_BINS" ]; then
+              echo "### Command-line tools: ${BINS// / and }"
+              echo ""
+              echo '```bash'
+              echo "curl -sSL https://github.com/$GH_REPO/releases/latest/download/update.sh | bash"
+              echo '```'
+              echo ""
+              echo "Or download an archive, extract it and run \`install.sh\` (\`install.bat\` on Windows):"
+              echo ""
+              for p in linux-x64:tar.gz linux-arm64:tar.gz macos-x64:tar.gz macos-arm64:tar.gz windows-x64:zip; do
+                f="$CLI_NAME-$VERSION-${p%%:*}.${p#*:}"
+                echo "- [$f]($BASE/$f) ([sha256]($BASE/$f.sha256))"
+              done
+            fi
+          } >> notes.md
+          gh release edit "$TAG" --notes-file notes.md
