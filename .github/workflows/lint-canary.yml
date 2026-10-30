@@ -63,3 +63,16 @@ jobs:
       rust-clippy: '[{"dir": "pkg/earthsci-astdiff-rs"}]'
       python-dir: "."
       julia-paths: "."
+
+  EarthSciIO:
+    uses: ./.github/workflows/lint.yml
+    with:
+      repository: EarthSciML/EarthSciIO
+      ref: main
+      rust-dirs: '["rust"]'
+      rust-clippy: >-
+        [{"dir": "rust", "args": "--features object-store"},
+         {"dir": "rust", "target": "wasm32-unknown-unknown",
+          "args": "--no-default-features --features opfs"}]
+      python-dir: "."
+      julia-paths: "."
