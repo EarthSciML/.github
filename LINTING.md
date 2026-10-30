@@ -8,7 +8,7 @@ and EarthSciIO. (The Julia-only packages keep their own FormatCheck setup.)
 
 | Language   | Format gate                  | Lint gate                                               | Version                      |
 | ---------- | ---------------------------- | ------------------------------------------------------- | ---------------------------- |
-| Rust       | `cargo fmt --all -- --check` | `cargo clippy --workspace --all-targets <args> -- -D warnings`, one job per target/feature set | Rust 1.99.1 |
+| Rust       | `cargo fmt --all -- --check` | `cargo clippy --workspace --all-targets <args> -- -D warnings` (`--all-targets` can be overridden per run), one job per target/feature set | Rust 1.99.1 |
 | Python     | `ruff format --check`        | `ruff check`; optional pyright or mypy job               | ruff 0.17.3                  |
 | Julia      | Runic `--check`              | (Aqua / ExplicitImports belong in the package's tests)  | Runic 1.13                   |
 | TypeScript | the repo's npm scripts (`format:check`) | the repo's npm scripts (`lint`, `typecheck`) | the repo's `package-lock.json` |
@@ -51,8 +51,9 @@ jobs:
     with:
       rust-dirs: '["rust"]'
       rust-clippy: >-
-        [{"dir": "rust", "args": "--features conformance,object-store"},
-         {"dir": "rust", "target": "wasm32-unknown-unknown", "args": "--features opfs"}]
+        [{"dir": "rust", "args": "--features object-store"},
+         {"dir": "rust", "target": "wasm32-unknown-unknown", "targets": "--lib",
+          "args": "--no-default-features --features opfs"}]
       python-dir: "."
       julia-paths: "."
 ```

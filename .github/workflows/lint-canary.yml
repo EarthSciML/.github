@@ -72,7 +72,7 @@ jobs:
       rust-dirs: '["rust"]'
       rust-clippy: >-
         [{"dir": "rust", "args": "--features object-store"},
-         {"dir": "rust", "target": "wasm32-unknown-unknown",
+         {"dir": "rust", "target": "wasm32-unknown-unknown", "targets": "--lib",
           "args": "--no-default-features --features opfs"}]
       python-dir: "."
       julia-paths: "."
