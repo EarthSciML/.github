@@ -1,0 +1,355 @@
+name: "Reusable Lint"
+
+# Format and lint gate for the multi-language repositories (EarthSciAST,
+# EarthSciIntegrator, EarthSciASTDiff, EarthSciIO). See LINTING.md in this
+# repository for the rationale and how to adopt it.
+#
+# Each language job runs only when its input is set, so a caller passes just
+# the languages it has. Tool VERSIONS are pinned here, so one PR to this file
+# moves all callers at once, after lint-canary.yml has run it against each
+# caller's main. The RULES stay in each repository's own native config files
+# (rustfmt.toml, [workspace.lints], ruff.toml, eslint.config.js, .golangci.yml,
+# lakefile.toml), so a local `cargo clippy` or `ruff check` agrees with CI.
+#
+# Every language is its own job, so one failing gate never hides another, and
+# none of them is a step of a test job, so a style finding never hides a test
+# result.
+
+on:
+  workflow_call:
+    inputs:
+      repository:
+        description: "Repository to check out; empty means the caller. Set by lint-canary.yml"
+        type: string
+        default: ""
+      ref:
+        description: "Ref to check out; empty means the triggering ref"
+        type: string
+        default: ""
+
+      # --- Rust ---------------------------------------------------------
+      rust-dirs:
+        description: 'JSON list of crate or workspace directories to rustfmt-check, e.g. ["rust"]'
+        type: string
+        default: ""
+      rust-clippy:
+        description: >-
+          JSON list of clippy runs, one job each. Each entry has "dir", optional
+          "target" (a rustup target triple; host when absent) and optional "args"
+          (feature flags), e.g. [{"dir": "rust", "args": "--all-features"},
+          {"dir": "rust", "target": "wasm32-unknown-unknown", "args": "--features opfs"}]
+        type: string
+        default: ""
+      rust-toolchain:
+        description: "Toolchain for rustfmt and clippy only; test jobs should keep floating stable"
+        type: string
+        default: "1.99.1"
+
+      # --- Python -------------------------------------------------------
+      python-dir:
+        description: >-
+          Directory ruff runs in. Ruff resolves some settings (per-file-ignores
+          globs among them) against the working directory, so this should be
+          where the repository runs ruff locally
+        type: string
+        default: ""
+      python-paths:
+        description: "Space-separated paths, relative to python-dir, for ruff to check"
+        type: string
+        default: "."
+      ruff-version:
+        type: string
+        default: "0.17.3"
+      python-typecheck:
+        description: 'Opt-in type check: "pyright" or "mypy"; empty skips it'
+        type: string
+        default: ""
+      python-typecheck-dir:
+        description: "Directory the type checker runs in (its config is found from here)"
+        type: string
+        default: "."
+      python-typecheck-install:
+        description: "Command, run in python-typecheck-dir, that installs the package so imports resolve"
+        type: string
+        default: "pip install -e ."
+      python-typecheck-args:
+        description: "Extra arguments, e.g. the paths to check"
+        type: string
+        default: ""
+      python-version:
+        type: string
+        default: "3.12"
+      pyright-version:
+        type: string
+        default: "1.1.414"
+      mypy-version:
+        type: string
+        default: "2.4.1"
+
+      # --- Julia --------------------------------------------------------
+      julia-paths:
+        description: "Space-separated Julia package directories to Runic-check"
+        type: string
+        default: ""
+      runic-version:
+        description: "Runic version spec; a minor version (1.13) admits patch releases only"
+        type: string
+        default: "1.13"
+
+      # --- TypeScript ---------------------------------------------------
+      ts-dir:
+        description: "Directory holding package.json and package-lock.json; tool versions come from the lockfile"
+        type: string
+        default: ""
+      ts-scripts:
+        description: "Space-separated npm scripts to run; every one runs even if an earlier one fails"
+        type: string
+        default: "lint format:check typecheck"
+      node-version:
+        type: string
+        default: "24"
+
+      # --- Go -----------------------------------------------------------
+      go-dir:
+        description: "Directory holding go.mod"
+        type: string
+        default: ""
+      golangci-lint-version:
+        type: string
+        default: "v2.15.0"
+
+      # --- Lean ---------------------------------------------------------
+      lean-dir:
+        description: >-
+          Lake package directory. The toolchain comes from its lean-toolchain.
+          `lake lint` runs when its lakefile sets a lint driver.
+        type: string
+        default: ""
+      lean-axiom-allow:
+        description: "Axioms the build may depend on; anything else (sorryAx, Lean.ofReduceBool, a custom axiom) fails"
+        type: string
+        default: "propext,Classical.choice,Quot.sound"
+
+permissions:
+  contents: read
+
+jobs:
+  rustfmt:
+    if: inputs.rust-dirs != ''
+    name: "rustfmt (${{ matrix.dir }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: ${{ fromJSON(inputs.rust-dirs || '[]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-toolchain }}
+          components: rustfmt
+      - working-directory: ${{ matrix.dir }}
+        run: cargo fmt --all -- --check
+
+  clippy:
+    if: inputs.rust-clippy != ''
+    name: "clippy (${{ matrix.run.dir }}, ${{ matrix.run.target || 'host' }} ${{ matrix.run.args }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        run: ${{ fromJSON(inputs.rust-clippy || '[]') }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-toolchain }}
+          components: clippy
+          targets: ${{ matrix.run.target || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.run.dir }}
+          key: clippy-${{ matrix.run.target || 'host' }}-${{ matrix.run.args }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # `-- -D warnings` rather than RUSTFLAGS=-Dwarnings: RUSTFLAGS replaces
+      # any rustflags in .cargo/config.toml and invalidates the build cache.
+      - working-directory: ${{ matrix.run.dir }}
+        env:
+          TARGET: ${{ matrix.run.target }}
+          ARGS: ${{ matrix.run.args }}
+        run: |
+          # shellcheck disable=SC2086 # ARGS is a list of flags
+          cargo clippy --workspace --all-targets ${TARGET:+--target "$TARGET"} $ARGS -- -D warnings
+
+  ruff:
+    if: inputs.python-dir != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ${{ inputs.python-dir }}
+    env:
+      PATHS: ${{ inputs.python-paths }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+      # Not astral-sh/ruff-action: it has no working-directory input.
+      - name: Install ruff ${{ inputs.ruff-version }}
+        run: pipx install "ruff==${{ inputs.ruff-version }}"
+      - name: ruff check
+        run: |
+          # shellcheck disable=SC2086 # PATHS is a list of paths
+          ruff check --output-format=github $PATHS
+      - name: ruff format
+        if: ${{ !cancelled() }}
+        run: |
+          # shellcheck disable=SC2086 # PATHS is a list of paths
+          ruff format --check --diff $PATHS
+
+  python-typecheck:
+    if: inputs.python-typecheck != ''
+    name: "python-typecheck (${{ inputs.python-typecheck }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ${{ inputs.python-typecheck-dir }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+      - name: Install the package
+        run: ${{ inputs.python-typecheck-install }}
+      - name: Run ${{ inputs.python-typecheck }}
+        env:
+          CHECKER: ${{ inputs.python-typecheck }}
+          ARGS: ${{ inputs.python-typecheck-args }}
+          PYRIGHT_VERSION: ${{ inputs.pyright-version }}
+          MYPY_VERSION: ${{ inputs.mypy-version }}
+        run: |
+          # shellcheck disable=SC2086 # ARGS is a list of arguments
+          case "$CHECKER" in
+            pyright) pip install "pyright==$PYRIGHT_VERSION" && pyright $ARGS ;;
+            mypy)    pip install "mypy==$MYPY_VERSION" && mypy $ARGS ;;
+            *) echo "::error::python-typecheck must be pyright or mypy, got '$CHECKER'"; exit 1 ;;
+          esac
+
+  runic:
+    if: inputs.julia-paths != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: "1"
+      - name: Install Runic ${{ inputs.runic-version }}
+        shell: julia --color=yes {0}
+        run: |
+          using Pkg
+          Pkg.activate("runic"; shared = true)
+          Pkg.add(name = "Runic", version = "${{ inputs.runic-version }}")
+      - name: Runic --check
+        env:
+          PATHS: ${{ inputs.julia-paths }}
+        run: |
+          # shellcheck disable=SC2086 # PATHS is a list of directories
+          julia --project=@runic -m Runic --check --diff $PATHS
+
+  typescript:
+    if: inputs.ts-dir != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: ${{ inputs.ts-dir }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.ts-dir }}/package-lock.json
+      - run: npm ci
+      - name: npm run ${{ inputs.ts-scripts }}
+        env:
+          SCRIPTS: ${{ inputs.ts-scripts }}
+        run: |
+          status=0
+          for s in $SCRIPTS; do
+            echo "::group::npm run $s"
+            npm run "$s" || status=1
+            echo "::endgroup::"
+          done
+          exit $status
+
+  go:
+    if: inputs.go-dir != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: ${{ inputs.go-dir }}/go.mod
+          cache-dependency-path: ${{ inputs.go-dir }}/go.sum
+      - name: golangci-lint run
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ inputs.golangci-lint-version }}
+          working-directory: ${{ inputs.go-dir }}
+      # gofmt ships with the Go toolchain set up above, so it needs no
+      # config. Extra formatters (goimports, gci, ...) belong in the repo's
+      # .golangci.yml under `formatters:`.
+      - name: gofmt
+        if: ${{ !cancelled() }}
+        working-directory: ${{ inputs.go-dir }}
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            gofmt -d .
+            echo "::error::These Go files need gofmt: $(echo $unformatted)"
+            exit 1
+          fi
+
+  lean:
+    if: inputs.lean-dir != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.ref }}
+      # --wfail fails the build on any warning, `declaration uses sorry`
+      # included. The axiom audit reads the kernel environment, so it also
+      # catches native_decide and custom axioms reached through imports.
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: ${{ inputs.lean-dir }}
+          build-args: "--wfail"
+          axiom-audit: true
+          axiom-audit-allow: ${{ inputs.lean-axiom-allow }}

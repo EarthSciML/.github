@@ -1,0 +1,61 @@
+name: "Lint canary"
+
+# Runs this commit's lint.yml against each caller's main, so a change to
+# lint.yml (most often a pinned tool version bump) that would turn a caller
+# red shows up here, before it reaches the caller's pull requests.
+#
+# The inputs mirror each caller's own .github/workflows/lint.yml; keep them
+# in step when a caller changes its lint inputs. A caller joins this list once
+# its main passes the gate.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/lint.yml"
+      - ".github/workflows/lint-canary.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lint-canary-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  EarthSciAST:
+    uses: ./.github/workflows/lint.yml
+    with:
+      repository: EarthSciML/EarthSciAST
+      ref: main
+      rust-dirs: '["pkg/earthsci-ast-rs", "pkg/earthsci-narrative", "pkg/earthsci-typst-plugin"]'
+      rust-clippy: >-
+        [{"dir": "pkg/earthsci-ast-rs", "args": "--features conformance-adapters,wasm,parallel,simd,zero_copy,custom_alloc,benchmarks,performance,esio"},
+         {"dir": "pkg/earthsci-ast-rs", "target": "aarch64-unknown-linux-gnu", "args": "--features simd"},
+         {"dir": "pkg/earthsci-narrative"},
+         {"dir": "pkg/earthsci-typst-plugin"}]
+      python-dir: pkg/earthsci-ast-py
+      python-paths: src tests ../../scripts
+      ts-dir: pkg/earthsci-ast-ts
+      go-dir: pkg/earthsci-ast-go
+      lean-dir: formal
+
+  EarthSciIntegrator:
+    uses: ./.github/workflows/lint.yml
+    with:
+      repository: EarthSciML/EarthSciIntegrator
+      ref: main
+      rust-dirs: '["rust"]'
+      rust-clippy: '[{"dir": "rust"}]'
+      python-dir: "."
+      julia-paths: "."
+
+  EarthSciASTDiff:
+    uses: ./.github/workflows/lint.yml
+    with:
+      repository: EarthSciML/EarthSciASTDiff
+      ref: main
+      rust-dirs: '["pkg/earthsci-astdiff-rs"]'
+      rust-clippy: '[{"dir": "pkg/earthsci-astdiff-rs"}]'
+      python-dir: "."
+      julia-paths: "."
