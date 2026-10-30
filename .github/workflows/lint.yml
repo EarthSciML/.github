@@ -125,6 +125,13 @@ on:
           `lake lint` runs when its lakefile sets a lint driver.
         type: string
         default: ""
+      lean-build-args:
+        description: >-
+          Arguments for `lake build`. --wfail fails on any warning, `declaration
+          uses sorry` included; a repository still clearing warnings can pass ""
+          and keep the axiom audit, which also catches sorry
+        type: string
+        default: "--wfail"
       lean-axiom-allow:
         description: "Axioms the build may depend on; anything else (sorryAx, Lean.ofReduceBool, a custom axiom) fails"
         type: string
@@ -343,12 +350,11 @@ jobs:
         with:
           repository: ${{ inputs.repository }}
           ref: ${{ inputs.ref }}
-      # --wfail fails the build on any warning, `declaration uses sorry`
-      # included. The axiom audit reads the kernel environment, so it also
-      # catches native_decide and custom axioms reached through imports.
+      # The axiom audit reads the kernel environment, so it catches sorry,
+      # native_decide and custom axioms, including ones reached through imports.
       - uses: leanprover/lean-action@v1
         with:
           lake-package-directory: ${{ inputs.lean-dir }}
-          build-args: "--wfail"
+          build-args: ${{ inputs.lean-build-args }}
           axiom-audit: true
           axiom-audit-allow: ${{ inputs.lean-axiom-allow }}

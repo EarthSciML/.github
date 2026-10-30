@@ -39,6 +39,10 @@ jobs:
       ts-dir: pkg/earthsci-ast-ts
       go-dir: pkg/earthsci-ast-go
       lean-dir: formal
+      # Not --wfail yet: the proofs build with ~150 warnings (deprecated
+      # if_pos/if_neg, unused simp arguments and tactics, Mathlib's module-system
+      # import notes). The axiom audit still fails on any sorry.
+      lean-build-args: ""
 
   EarthSciIntegrator:
     uses: ./.github/workflows/lint.yml

@@ -13,7 +13,7 @@ and EarthSciIO. (The Julia-only packages keep their own FormatCheck setup.)
 | Julia      | Runic `--check`              | (Aqua / ExplicitImports belong in the package's tests)  | Runic 1.13                   |
 | TypeScript | the repo's npm scripts (`format:check`) | the repo's npm scripts (`lint`, `typecheck`) | the repo's `package-lock.json` |
 | Go         | `gofmt -l`                   | `golangci-lint run`                                     | golangci-lint v2.15.0        |
-| Lean       | (none)                       | `lake build --wfail`, axiom audit, `lake lint` when the lakefile sets a lint driver | the repo's `lean-toolchain` |
+| Lean       | (none)                       | `lake build --wfail` (input `lean-build-args`), axiom audit, `lake lint` when the lakefile sets a lint driver | the repo's `lean-toolchain` |
 
 ## Principles
 
