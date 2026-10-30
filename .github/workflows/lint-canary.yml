@@ -33,7 +33,7 @@ jobs:
         [{"dir": "pkg/earthsci-ast-rs", "args": "--features conformance-adapters,wasm,parallel,simd,zero_copy,custom_alloc,benchmarks,performance,esio"},
          {"dir": "pkg/earthsci-ast-rs", "target": "aarch64-unknown-linux-gnu", "args": "--features simd"},
          {"dir": "pkg/earthsci-narrative"},
-         {"dir": "pkg/earthsci-typst-plugin"}]
+         {"dir": "pkg/earthsci-typst-plugin", "target": "wasm32-unknown-unknown"}]
       python-dir: pkg/earthsci-ast-py
       python-paths: src tests ../../scripts
       ts-dir: pkg/earthsci-ast-ts

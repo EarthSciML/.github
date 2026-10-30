@@ -157,7 +157,7 @@ jobs:
 
   clippy:
     if: inputs.rust-clippy != ''
-    name: "clippy (${{ matrix.run.dir }}, ${{ matrix.run.target || 'host' }} ${{ matrix.run.args }})"
+    name: "clippy (${{ matrix.run.dir }}${{ matrix.run.target && format(', {0}', matrix.run.target) || '' }}${{ matrix.run.args && format(', {0}', matrix.run.args) || '' }})"
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
@@ -218,7 +218,6 @@ jobs:
 
   python-typecheck:
     if: inputs.python-typecheck != ''
-    name: "python-typecheck (${{ inputs.python-typecheck }})"
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
