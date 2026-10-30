@@ -35,9 +35,12 @@ on:
       rust-clippy:
         description: >-
           JSON list of clippy runs, one job each. Each entry has "dir", optional
-          "target" (a rustup target triple; host when absent) and optional "args"
-          (feature flags), e.g. [{"dir": "rust", "args": "--all-features"},
-          {"dir": "rust", "target": "wasm32-unknown-unknown", "args": "--features opfs"}]
+          "target" (a rustup target triple; host when absent), optional "args"
+          (feature flags) and optional "targets" (cargo target selection,
+          default "--all-targets"; use "--lib" where tests and examples are
+          native-only), e.g. [{"dir": "rust", "args": "--all-features"},
+          {"dir": "rust", "target": "wasm32-unknown-unknown", "targets": "--lib",
+          "args": "--features opfs"}]
         type: string
         default: ""
       rust-toolchain:
@@ -184,7 +187,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ${{ matrix.run.dir }}
-          key: clippy-${{ matrix.run.target || 'host' }}-${{ matrix.run.args }}
+          key: clippy-${{ matrix.run.target || 'host' }}-${{ matrix.run.targets }}-${{ matrix.run.args }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # `-- -D warnings` rather than RUSTFLAGS=-Dwarnings: RUSTFLAGS replaces
       # any rustflags in .cargo/config.toml and invalidates the build cache.
@@ -192,9 +195,10 @@ jobs:
         env:
           TARGET: ${{ matrix.run.target }}
           ARGS: ${{ matrix.run.args }}
+          TARGETS: ${{ matrix.run.targets || '--all-targets' }}
         run: |
-          # shellcheck disable=SC2086 # ARGS is a list of flags
-          cargo clippy --workspace --all-targets ${TARGET:+--target "$TARGET"} $ARGS -- -D warnings
+          # shellcheck disable=SC2086 # TARGETS and ARGS are lists of flags
+          cargo clippy --workspace $TARGETS ${TARGET:+--target "$TARGET"} $ARGS -- -D warnings
 
   ruff:
     if: inputs.python-dir != ''
