@@ -65,7 +65,8 @@ its `Project.toml`, default `.`) where relevant.
   - `crates`: crate directories, in dependency order; `cargo-publish-args`
   - `npm-dir`
   - `go-module-dir` (tagged `<dir>/v<version>`)
-  - `cli-name`, `cli-bins` (`<crate dir>:<binary>` pairs): built for Linux
+  - `cli-name`, `cli-bins` (`<crate dir>:<binary>[:<features>]` entries, the
+    optional third field a comma-separated cargo feature list): built for Linux
     x64/ARM64 (glibc 2.17 floor), macOS x64/ARM64 and Windows x64, archived as
     `<cli-name>-<version>-<platform>`, and attached with checksums and an
     `update.sh` installer
