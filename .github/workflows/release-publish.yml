@@ -51,7 +51,7 @@ on:
         required: false
         type: string
       cli-bins:
-        description: "Whitespace-separated `<crate dir>:<binary>` pairs to build per platform and attach to the release"
+        description: "Whitespace-separated `<crate dir>:<binary>[:<features>]` entries to build per platform and attach to the release; `<features>` is a comma-separated cargo feature list"
         default: ""
         required: false
         type: string
@@ -266,7 +266,8 @@ jobs:
             build=(cargo build --target "$TARGET")
           fi
           for pair in $CLI_BINS; do
-            "${build[@]}" --release --manifest-path "${pair%%:*}/Cargo.toml" --bin "${pair##*:}"
+            IFS=: read -r dir bin features <<< "$pair"
+            "${build[@]}" --release --manifest-path "$dir/Cargo.toml" --bin "$bin" ${features:+--features "$features"}
           done
 
       - name: Check the glibc floor
@@ -278,7 +279,8 @@ jobs:
         run: |
           set -euo pipefail
           for pair in $CLI_BINS; do
-            bin="$CARGO_TARGET_DIR/$TARGET/release/${pair##*:}"
+            IFS=: read -r _ name _ <<< "$pair"
+            bin="$CARGO_TARGET_DIR/$TARGET/release/$name"
             need=$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sed 's/GLIBC_//' | sort -uV | tail -n 1)
             echo "$bin needs glibc $need"
             if [ "$(printf '%s\n%s\n' "$need" "$GLIBC" | sort -V | tail -n 1)" != "$GLIBC" ]; then
@@ -298,7 +300,7 @@ jobs:
           CLI_BINS: ${{ inputs.cli-bins }}
         run: |
           set -euo pipefail
-          BINS=""; for pair in $CLI_BINS; do BINS="$BINS ${pair##*:}"; done; BINS=${BINS# }
+          BINS=""; for pair in $CLI_BINS; do IFS=: read -r _ bin _ <<< "$pair"; BINS="$BINS $bin"; done; BINS=${BINS# }
           DIST_DIR="${CLI_NAME}-${VERSION}-${PLATFORM}"
           mkdir -p "$DIST_DIR"
           for bin in $BINS; do
@@ -397,7 +399,7 @@ jobs:
         run: |
           set -euo pipefail
           (cd dist && for f in "$CLI_NAME"-*; do sha256sum "$f" > "$f.sha256"; done)
-          BINS=""; for pair in $CLI_BINS; do BINS="$BINS ${pair##*:}"; done; BINS=${BINS# }
+          BINS=""; for pair in $CLI_BINS; do IFS=: read -r _ bin _ <<< "$pair"; BINS="$BINS $bin"; done; BINS=${BINS# }
           {
             echo '#!/bin/bash'
             echo "# Installs or updates $BINS from the latest release."
@@ -489,7 +491,7 @@ jobs:
           gh release view "$TAG" --json body --jq .body > body.md
           awk -v m="$MARKER" '$0 == m { exit } { print }' body.md > notes.md
           BASE="https://github.com/$GH_REPO/releases/download/$TAG"
-          BINS=""; for pair in $CLI_BINS; do BINS="$BINS \`${pair##*:}\`"; done; BINS=${BINS# }
+          BINS=""; for pair in $CLI_BINS; do IFS=: read -r _ bin _ <<< "$pair"; BINS="$BINS \`$bin\`"; done; BINS=${BINS# }
           {
             echo "$MARKER"
             echo ""
